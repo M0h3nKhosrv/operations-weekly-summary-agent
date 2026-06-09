@@ -1,0 +1,177 @@
+# Flow Overview
+
+## Flow Name
+
+`Operations Weekly Summary Flow`
+
+## Flow Type
+
+Automated cloud flow — triggered by SharePoint file creation.
+
+---
+
+## Step-by-Step
+
+| Step | Action | Input | Output | Notes |
+|---|---|---|---|---|
+| 1 | **Trigger:** When a file is created (properties only) | SharePoint folder monitored | File ID, File name with extension | Use `(properties only)` version — not the deprecated trigger |
+| 2 | **Execute Document Reader Agent and wait** | Message: filename | JSON: REPORT_DATE, SiteList, HyperlinkInventory | Set timeout to PT5M. See agent message format below. |
+| 3 | **Compose** — strip code fences | lastResponse from step 2 | Clean JSON string | Agent wraps JSON in markdown fences; this strips them |
+| 4 | **Parse JSON** — extract three variables | Outputs from Compose | REPORT_DATE, SiteList, HyperlinkInventory as typed values | Generate schema from sample — see schema below |
+| 5 | **Set variable** — REPORT_DATE | Body REPORT_DATE from Parse JSON | — | Do not self-reference; use Parse JSON output, not the variable |
+| 6 | **Initialize variable** — SITE_SUMMARIES | Empty string | — | Must be initialized before the loop |
+| 7 | **Apply to each** — loop over SiteList | SiteList from Parse JSON | — | Set concurrency to 1 to prevent async hang |
+| 7a | **Execute Site Summarizer Agent and wait** | Message: site name (Current item) | Site summary plain text | Timeout: PT5M per iteration |
+| 7b | **Append to string variable** — SITE_SUMMARIES | lastResponse + line breaks | Running SITE_SUMMARIES string | See append expression below |
+| 8 | **Execute Executive Summary Writer Agent and wait** | Message: SITE_SUMMARIES variable | EXECUTIVE_SUMMARY plain text | Timeout: PT5M |
+| 9 | **Execute Appendix Generator Agent and wait** | Message: SiteList + HyperlinkInventory | APPENDIX_CONTENT plain text | Timeout: PT5M |
+| 10 | **Populate a Word template** | REPORT_DATE, EXECUTIVE_SUMMARY, SITE_SUMMARIES, APPENDIX_CONTENT | Populated document (binary) | Template must have Content Controls — not text placeholders |
+| 11 | **SharePoint: Create file** | Document Content from step 10; timestamped filename | ItemId | See filename expression below |
+| 12 | **SharePoint: Get file properties** | ItemId from step 11 | Link to item (SharePoint URL) | |
+| 13 | **Send an email (V2)** | URL from step 12; REPORT_DATE | — | Recipient: report distribution address |
+
+---
+
+## Key Expressions
+
+### Step 2 — Agent message format
+In the Message field of the Execute Document Reader Agent step:
+```
+A new weekly source document has been added to the knowledge source.
+The file name is: [File name with extension — dynamic value from trigger]
+Read this document and return the JSON output.
+```
+
+### Step 3 — Strip code fences
+In the Compose step Inputs field (Expression tab):
+```
+replace(replace(outputs('Execute_Document_Reader_Agent_and_wait')?['body/lastResponse'], '```json', ''), '```', '')
+```
+Replace `Execute_Document_Reader_Agent_and_wait` with the exact internal name of your step if you named it differently.
+
+### Step 4 — Parse JSON schema
+Generate from sample by pasting this in the "Generate from sample" dialog:
+```json
+{
+  "REPORT_DATE": "May 20, 2026",
+  "SiteList": ["Site-1", "Site-2", "Site-3"],
+  "HyperlinkInventory": [
+    {
+      "site": "Site-1",
+      "displayText": "Weekly Dashboard",
+      "url": "https://app.powerbi.com/example"
+    }
+  ]
+}
+```
+
+### Step 7b — Append with separator
+In the Append to string variable step Value field (Expression tab):
+```
+concat(outputs('Execute_Summarizer_Agent_and_wait')?['body/lastResponse'], decodeUriComponent('%0A%0A'))
+```
+Replace the action name with the exact internal name of your Summarizer step.
+
+### Step 8 — Executive Summary message
+In the Message field of the Execute Executive Summary Writer step:
+```
+Generate the executive summary from the following site summaries:
+[SITE_SUMMARIES variable — dynamic value from Variables section]
+```
+
+### Step 9 — Appendix message
+In the Message field of the Execute Appendix Generator step:
+```
+Generate the appendix for the following sites: [SiteList from Parse JSON]
+Here are the hyperlinks to reinsert: [HyperlinkInventory from Parse JSON]
+```
+
+### Step 11 — Timestamped filename
+In the File Name field of the Create file step (Expression tab):
+```
+concat('Operations_Weekly_Summary_', formatDateTime(utcNow(), 'yyyy-MM-dd_HH-mm-ss'), '.docx')
+```
+
+---
+
+## Variables Initialized
+
+These variables must be initialized before the loop:
+
+| Variable | Type | Initial Value |
+|---|---|---|
+| `SITE_SUMMARIES` | String | (empty) |
+
+`REPORT_DATE`, `EXECUTIVE_SUMMARY`, and `APPENDIX_CONTENT` are set from agent outputs directly and do not require explicit initialization steps, though adding them improves debuggability.
+
+---
+
+## Loop Settings
+
+Open the `Apply to each` step → Settings tab:
+
+| Setting | Value | Reason |
+|---|---|---|
+| Concurrency Control | On | Enables the degree setting |
+| Degree of Parallelism | 1 | Sequential execution prevents async webhook hang |
+
+---
+
+## Agent Step Timeout Settings
+
+For each `Execute Agent and wait` step → Settings tab → Timeout:
+
+| Step | Recommended Timeout |
+|---|---|
+| Document Reader | `PT5M` (5 minutes) |
+| Site Summarizer | `PT5M` per iteration |
+| Executive Summary Writer | `PT5M` |
+| Appendix Generator | `PT10M` (longer — reads all sites) |
+
+Default timeout is `PT1M` (1 minute), which is insufficient for agents reading and processing large documents.
+
+---
+
+## Content Control Mapping
+
+In the `Populate a Word template` step, map as follows:
+
+| Content Control Name | Maps To |
+|---|---|
+| `REPORT_DATE` | REPORT_DATE variable (or Parse JSON body) |
+| `EXECUTIVE_SUMMARY` | lastResponse from Executive Summary Writer step |
+| `SITE_SUMMARIES` | SITE_SUMMARIES variable |
+| `APPENDIX_CONTENT` | lastResponse from Appendix Generator step |
+
+---
+
+## Email Notification (Step 13)
+
+**To:** Report distribution email address
+**Subject:** `Operations Weekly Summary — ` + REPORT_DATE variable
+**Body:**
+```
+The Operations Weekly Summary for [REPORT_DATE] has been generated 
+and is ready for review.
+
+Access the report here: [Link to item from Get file properties step]
+
+This report was generated automatically.
+```
+
+---
+
+## Finding the Internal Name of a Step
+
+Power Automate expressions reference steps by internal name (display name with spaces → underscores). To find a step's exact internal name:
+
+1. Click on any step that runs *after* the target step
+2. Go to its Code view tab
+3. Look at the `runAfter` section — it lists the exact internal name of the preceding step
+
+Example:
+```json
+"runAfter": {
+  "Execute_Document_Reader_Agent_and_wait": ["Succeeded"]
+}
+```
