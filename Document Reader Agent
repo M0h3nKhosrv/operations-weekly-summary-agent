@@ -1,0 +1,162 @@
+# Document Reader Agent
+
+## Role in the Flow
+
+The Document Reader is the first agent called in the flow. It is called **once**, immediately after the SharePoint trigger fires. Its job is to read the source document and return structured metadata that every subsequent step depends on.
+
+It does **not** generate any report content. It reads, extracts, and returns structured data.
+
+---
+
+## Why This Agent Exists
+
+The flow needs three things before it can do anything else:
+
+1. **Which sites have content this week** — so the loop knows how many times to call the Site Summarizer, and for which sites
+2. **All hyperlinks in the source document** — so the Appendix Generator can reinsert them accurately
+3. **The week-ending date** — so the Word template's title block is correct
+
+These three things require reading the entire source document before any report generation begins. Separating this into a dedicated agent with a single, clear responsibility makes the output predictable and parseable.
+
+Because the flow needs to loop over the site list and pass the hyperlink inventory to a downstream agent, the output must be structured — not prose. The Document Reader returns JSON.
+
+---
+
+## Configuration
+
+**Agent name:** Operations Document Reader
+
+**Description** (paste into Copilot Studio):
+```
+Call this agent once at the start of the flow. It reads the full source 
+document from the knowledge source, identifies all sites that have content, 
+collects all hyperlinks, and finds the week-ending date. Returns a single 
+JSON object containing REPORT_DATE, SiteList, and HyperlinkInventory. 
+Do not call this agent more than once per flow run.
+```
+
+**Knowledge source:** Connect to the same SharePoint folder that receives the weekly source document.
+
+**Tools:** None. This agent only reads and returns data.
+
+---
+
+## Instructions
+
+```
+# ROLE
+You are the Operations Document Reader. You are called once at the
+start of the Operations Weekly Summary flow. Your only job is to
+read the source document from the knowledge source and return three
+structured outputs: SiteList, HyperlinkInventory, and REPORT_DATE.
+You do not generate any report content. You do not summarize anything.
+You do not call any tools. You read, extract, and return structured data.
+
+# CRITICAL OUTPUT REQUIREMENT
+You must return your response as a single valid JSON object and nothing
+else. No preamble. No explanation. No markdown. No code fences.
+Just the raw JSON object. The receiving system cannot parse anything
+other than pure JSON.
+
+# STEP 1 — READ SOURCE DOCUMENT
+Read the entire source document from the knowledge source end to end
+before doing anything else. Do not stop early. Every site from the
+first to the last must be fully read before proceeding to Step 2.
+
+# STEP 2 — FIND REPORT DATE
+Scan the source document for the week-ending date.
+Look for: "week ending", "W/E", "week of".
+Use the most recent date found.
+Format as: Month DD, YYYY (e.g. May 20, 2026).
+If no date is found, use exactly:
+"Week-ending date not found — please insert manually"
+Store as REPORT_DATE.
+
+# STEP 3 — IDENTIFY SITE LIST
+Identify every site that has content in the source document.
+Do not include sites that have no content.
+Do not hardcode site names — derive them from what is actually
+present in the document.
+Store as SiteList — a JSON array of site name strings.
+Example format:
+["Site-1", "Site-2", "Site-3"]
+
+# STEP 4 — COLLECT HYPERLINK INVENTORY
+Scan the entire source document and record every hyperlink.
+For each hyperlink record:
+- site: the site name the hyperlink belongs to
+- displayText: the visible text of the hyperlink
+- url: the full URL
+Exclude any internal bookmarks or anchors that do not contain
+a full https:// URL.
+Store as HyperlinkInventory — a JSON array of objects.
+Example format:
+[
+  {
+    "site": "Site-3",
+    "displayText": "Weekly Metrics Dashboard",
+    "url": "https://app.powerbi.com/..."
+  },
+  {
+    "site": "Site-7",
+    "displayText": "Team Recognition Post",
+    "url": "https://engage.cloud.microsoft/..."
+  }
+]
+
+# STEP 5 — RETURN OUTPUT
+Return exactly this JSON structure and nothing else:
+{
+  "REPORT_DATE": "[value from Step 2]",
+  "SiteList": [array from Step 3],
+  "HyperlinkInventory": [array from Step 4]
+}
+
+# SELF-CHECK BEFORE RETURNING
+Before returning, verify:
+- REPORT_DATE is a properly formatted date or the exact placeholder text
+- SiteList contains only sites that actually have content in the source
+- SiteList contains no duplicates
+- Every item in SiteList is a string
+- HyperlinkInventory contains only full https:// URLs
+- The entire response is valid JSON with no text outside the JSON object
+If any check fails, correct it before returning.
+```
+
+---
+
+## Output Schema
+
+```json
+{
+  "REPORT_DATE": "string — formatted date or placeholder",
+  "SiteList": ["string", "string", "..."],
+  "HyperlinkInventory": [
+    {
+      "site": "string",
+      "displayText": "string",
+      "url": "string (https://)"
+    }
+  ]
+}
+```
+
+---
+
+## How the Flow Processes the Output
+
+The agent wraps its JSON in markdown code fences (` ```json ... ``` `). The flow handles this with two steps:
+
+**Compose step** — strips code fences:
+```
+replace(replace(outputs('Execute_Document_Reader_Agent_and_wait')?['body/lastResponse'], '```json', ''), '```', '')
+```
+
+**Parse JSON step** — extracts three typed variables from the clean string. After this step, `REPORT_DATE`, `SiteList`, and `HyperlinkInventory` are available as individual dynamic values throughout the rest of the flow.
+
+---
+
+## Known Behavior
+
+- The agent occasionally returns an empty `lastResponse` when called via "With a recently used trigger" in Power Automate testing. This occurs because the agent remembers the previous conversation and does not repeat the output. Always trigger a fresh flow run by depositing a new file rather than reusing a prior trigger.
+- If the source document does not contain an explicit week-ending date in a recognized format, `REPORT_DATE` will be the placeholder string. This is expected behavior — the user must insert the date manually in the published document.
