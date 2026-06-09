@@ -1,0 +1,97 @@
+# Orchestrator Agent
+
+## Role in the Flow
+
+The Orchestrator is the user-facing Copilot Studio agent. Its job is minimal by design: receive the user's trigger, call the Power Automate flow, and return the SharePoint URL to the user when the flow completes.
+
+All content generation happens inside the flow via the four child agents. The Orchestrator does not generate content, does not read the knowledge source, and does not make decisions about the report.
+
+---
+
+## Why the Orchestrator Is Minimal
+
+Earlier versions of this system attempted to make a single agent do everything — read the document, generate the report, and call the flow. This failed because the generative orchestrator cannot store large content variables and pass them to a flow reliably. See `docs/architecture/design-decisions.md` for the full explanation.
+
+The solution was to move all intelligence into the flow, reducing the Orchestrator's role to a thin interface layer. This design has two advantages:
+
+1. The Orchestrator never risks the variable storage problem — it passes no content, only a trigger
+2. The system can be triggered automatically (via the SharePoint file-creation trigger) without needing a user to interact with the Orchestrator at all
+
+In the current production design, the primary trigger is the SharePoint `When a file is created (properties only)` trigger — not the Orchestrator. The Orchestrator exists for ad-hoc manual triggering.
+
+---
+
+## Configuration
+
+**Agent name:** Operations Weekly Summary Agent
+
+**Description:** (set in Copilot Studio agent settings)
+```
+Generates the Operations Weekly Summary report. When triggered, calls 
+the Operations Weekly Summary Flow and returns a link to the published 
+Word document.
+```
+
+**Knowledge source:** None required.
+
+**Tools:** The Operations Weekly Summary Flow, connected via the Tools tab.
+
+---
+
+## Tool Description
+
+In the Tools tab, the flow must be connected with this description:
+
+```
+Call this tool when the user asks to generate the Operations Weekly 
+Summary report. Do not ask the user for any input. Do not generate 
+any content before calling this tool. Call it immediately and wait 
+for it to return a URL. When the URL is returned, respond to the user 
+with exactly: "Your Operations Weekly Summary is ready: [URL]"
+```
+
+---
+
+## Agent Instructions
+
+```
+# ROLE
+You are the Operations Weekly Summary Agent. When the user asks to 
+generate the Operations Weekly Summary, immediately call the 
+Operations Weekly Summary Flow tool. Do not read any documents. 
+Do not generate any content. Do not ask the user for input.
+
+# STEP 1 — RECEIVE TRIGGER
+When the user asks to generate, create, or produce the Operations 
+Weekly Summary, respond with:
+"Starting the Operations Weekly Summary. This will take several 
+minutes. I will let you know when it is ready."
+Then immediately call the tool.
+
+# STEP 2 — CALL THE FLOW
+Call the Operations Weekly Summary Flow tool with no inputs.
+Wait for it to return a URL.
+
+# STEP 3 — RESPOND
+When the tool returns a URL, respond with exactly:
+"Your Operations Weekly Summary is ready: [URL]"
+
+If the tool call fails, respond with:
+"The flow encountered an error. Please check the Power Automate 
+run history for details and try again."
+```
+
+---
+
+## When the Orchestrator Is Not Used
+
+In the standard production setup, the flow is triggered automatically by the SharePoint trigger when the source document is deposited — without any user interaction with the Orchestrator. In this case:
+
+- The flow runs end-to-end automatically
+- The email notification (Step 13 of the flow) delivers the result to the report recipient
+- The Orchestrator is not involved
+
+The Orchestrator is useful for:
+- Ad-hoc manual runs outside the normal deposit cycle
+- Testing and validation during development
+- Re-running a report if the automatic trigger failed
