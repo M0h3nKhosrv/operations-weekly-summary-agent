@@ -1,0 +1,104 @@
+# Changelog
+
+All significant design decisions and version changes are documented here.
+
+---
+
+## [1.0.0] — Current Version
+
+### Multi-Agent Flow Architecture
+
+**What changed:** Complete architectural redesign from a single Copilot Studio agent to a multi-agent system orchestrated by a Power Automate flow.
+
+**What is included:**
+- Document Reader Agent — reads source document, returns structured JSON
+- Site Summarizer Agent — called once per site in an `Apply to each` loop
+- Executive Summary Writer Agent — generates Section 1 from assembled summaries
+- Appendix Generator Agent — reproduces source content for Section 3
+- Power Automate flow — orchestrates agents, populates Word template, saves to SharePoint, sends email notification
+- Word template with four Content Controls
+- SharePoint trigger — flow fires automatically when source document is deposited
+
+**What is not yet included (planned for v1.1):**
+- Audit Agent between the Appendix Generator and Word template population step
+
+---
+
+## [0.3.0] — Single Agent with Sequential Instructions (Abandoned)
+
+### Why This Was Tried
+
+This approach used a single Copilot Studio agent with detailed step-by-step instructions covering all nine steps: read document, collect hyperlinks, map terminology, find date, generate all three sections, self-check, call flow, return URL.
+
+The instructions were structured with explicit named variables (REPORT_DATE, EXECUTIVE_SUMMARY, SITE_SUMMARIES, APPENDIX_CONTENT) matching the flow's Content Controls.
+
+### Why It Failed
+
+The Copilot Studio generative orchestrator narrates variable storage but does not actually store variables. When Step 8 of the instructions said "call the flow and pass EXECUTIVE_SUMMARY as input," the orchestrator had no actual content to pass — it had narrated the generation steps without storing real output.
+
+Evidence: the flow was never triggered in Power Automate run history, despite the agent reporting successful completion in the chat. The activity map showed the orchestrator performing knowledge source searches rather than sequential report generation.
+
+**Root cause confirmed:** The generative orchestrator is designed for conversational reasoning, not for storing large named content blocks and passing them to external tools as structured variables. This is a platform constraint, not a configuration problem.
+
+---
+
+## [0.2.0] — Topic-Based Single Agent (Abandoned)
+
+### Why This Was Tried
+
+After the orchestrator-only approach failed, a topic-based approach was tested. The goal was to use Copilot Studio's topic canvas to build an explicit node-by-node sequence: trigger → custom search → AI Builder prompt → flow call. This would give deterministic control over each step.
+
+Several node types were explored:
+- `Generative answers` node — displays answer in chat but has no output variable
+- `AI Builder prompt` node — has an output variable (`predictionOutput`) but cannot dynamically access a changing knowledge source file
+- `Custom search` node — returns a table-type variable, not a string; type mismatch when passed to AI Builder prompt
+- YAML editing — binding names required to connect nodes were inconsistent and difficult to discover
+
+### Why It Failed
+
+The AI Builder prompt node is isolated from the agent's knowledge source. It can receive a hardcoded file or a text variable, but cannot dynamically query a knowledge source for whichever file was most recently added. This made it unsuitable for a weekly process where the source filename changes.
+
+Additionally, Copilot Studio topics cannot natively loop over a dynamic list. Calling the Summarizer once per site requires a loop construct — which does not exist in the topic canvas.
+
+**Key insight:** Topics give deterministic control for fixed conversation flows. They are not the right tool for dynamic document processing with a variable number of sites.
+
+---
+
+## [0.1.0] — Test Agent Validation
+
+### What Was Built
+
+Before attempting the main agent, a simplified test agent was built to validate the core architecture:
+
+- **Agent:** Reads a fixed test file from the knowledge source, generates a one-paragraph summary, captures today's date
+- **Flow:** Receives `SummaryDate` and `SummaryContent` as inputs, populates a two-field Word template, saves to SharePoint, returns URL
+- **Result:** Worked end-to-end on first attempt after proper variable naming and tool description
+
+### What This Proved
+
+- The agent can read a file from a SharePoint knowledge source
+- The agent can generate content and store it in named variables
+- The agent can call a flow tool automatically without user input, when the tool description is explicit about when to call it and what to pass
+- The flow can receive text variables, populate a Word template with Content Controls, save to SharePoint, and return a URL
+- The tool description's wording directly controls whether the orchestrator calls the tool correctly
+
+### Key Lessons Applied to the Main Agent
+
+1. Variable names must be consistent across agent instructions, flow trigger inputs, and tool description
+2. The tool description must explicitly state: when to call (after which step), what to pass (exact variable names), and not to ask the user for input
+3. Word templates must use native Word Content Controls — not text placeholders — for the `Populate a Word template` Power Automate action
+4. `body/lastResponse` is the correct output path for extracting text from an `Execute Agent and wait` step
+
+---
+
+## [0.0.1] — Initial Feasibility Assessment
+
+### Question Evaluated
+
+Can a Microsoft Copilot Studio Workflow handle the full report generation task?
+
+### Finding
+
+A Workflow (Power Automate flow) can handle the automation layer — triggering, file handling, output routing — but cannot perform language reasoning. The core tasks (terminology mapping, content prioritization, self-check) require a language model, not workflow logic.
+
+**Decision:** Use a Copilot Studio agent for reasoning; use a Power Automate flow for file operations and routing. This combination is the intended Microsoft design pattern for document intelligence use cases.
