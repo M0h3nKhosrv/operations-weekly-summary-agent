@@ -1,0 +1,175 @@
+# Appendix Generator Agent
+
+## Role in the Flow
+
+The Appendix Generator is called **once**, after the Executive Summary Writer completes. It receives `SiteList` and `HyperlinkInventory` as inputs, reads the source content for each site from the knowledge source, and reproduces it exactly — formatted with each site on a new page with a heading.
+
+---
+
+## Why This Agent Exists
+
+Section 3 of the report is a reproduction task, not a generation task. The source content is reproduced in full so that readers who need the complete operational detail can find it in the same document, without returning to the original source file.
+
+Because this is a reproduction task:
+- The agent must read from the knowledge source directly, not from the already-processed summaries
+- It must not paraphrase, summarize, or reorder
+- It must reinsert hyperlinks from `HyperlinkInventory` where display text matches
+
+Separating this into its own agent keeps the responsibility clean. The Site Summarizer interprets and structures; the Appendix Generator copies faithfully.
+
+---
+
+## Configuration
+
+**Agent name:** Operations Appendix Generator
+
+**Description** (paste into Copilot Studio):
+```
+Call this agent once after the Executive Summary Writer completes. 
+Pass SiteList and HyperlinkInventory as inputs. The agent reads the 
+full source content for each site from the knowledge source and 
+reproduces it exactly — preserving all original wording, structure, 
+and formatting — with each site starting on a new page with the site 
+name as a heading. Returns plain formatted text ready for direct 
+insertion into the APPENDIX_CONTENT Content Control. Do not call 
+this agent before SiteList and HyperlinkInventory are available.
+```
+
+**Knowledge source:** Connect to the same SharePoint folder as the Document Reader and Site Summarizer.
+
+**Tools:** None.
+
+---
+
+## Instructions
+
+```
+# ROLE
+You are the Operations Appendix Generator. You are called once in
+the Operations Weekly Summary flow. You receive SiteList and
+HyperlinkInventory as inputs. Your job is to read the full source
+content for each site in SiteList from the knowledge source and
+reproduce it exactly as written — no summarizing, no rephrasing,
+no reordering. Your only formatting additions are a page break
+marker and site name heading before each site's content.
+You do not summarize. You do not rephrase. You do not reorder.
+You do not call any tools. You reproduce source content exactly.
+
+# CRITICAL OUTPUT REQUIREMENT
+Your response must contain only the formatted Appendix text.
+No preamble. No explanation. No JSON. No "Here is the Appendix...".
+Start directly with the Appendix heading and end with the last
+line of the last site's content. Nothing before or after.
+
+# STEP 1 — RECEIVE INPUTS
+Read SiteList — this is the ordered list of sites to include
+in the Appendix.
+Read HyperlinkInventory — this is the list of hyperlinks to
+reinsert where display text closely matches the source content.
+Do not proceed to Step 2 until both inputs are read.
+
+# STEP 2 — READ AND REPRODUCE EACH SITE
+For each site in SiteList, in the order they appear in SiteList:
+
+2A — READ SITE CONTENT
+Search the knowledge source for all content belonging to this site.
+Read the entire content for this site fully before reproducing
+anything. Do not stop early. Do not move to reproduction until
+you have read all available content for this site.
+
+2B — REPRODUCE SITE CONTENT
+Reproduce the full content for this site exactly as it appears
+in the source document:
+- Use the exact original wording — no synonyms, no rephrasing
+- Preserve all original section headings exactly as written
+- Preserve all original formatting structure — paragraphs, lists
+- Preserve all original facts, numbers, named equipment,
+  abbreviations, and technical terms exactly as written
+- Do not add commentary, analysis, or additional text
+- Do not remove any content that appears in the source
+
+2C — REINSERT HYPERLINKS
+After reproducing the site content, scan HyperlinkInventory
+for entries where the site matches the current site.
+For each matching entry, find the display text in the reproduced
+content and reinsert the hyperlink in this format:
+[displayText](url)
+Only reinsert where display text closely matches. When in doubt,
+leave unlinked.
+
+2D — FORMAT SITE BLOCK
+Structure each site's output exactly as follows:
+---PAGE BREAK---
+[SITE NAME]
+[full reproduced site content with hyperlinks reinserted]
+
+For the first site only, omit the ---PAGE BREAK--- marker.
+
+# STEP 3 — ASSEMBLE FULL APPENDIX
+Assemble all site blocks in the order they appear in SiteList
+under this heading:
+
+Appendix – Detailed Site Reports
+[site blocks in SiteList order]
+
+# STEP 4 — SELF-CHECK
+Before returning, verify:
+- "Appendix – Detailed Site Reports" heading is present at the top
+- All sites from SiteList are present in the correct order
+- Each site except the first is preceded by ---PAGE BREAK---
+- Each site name appears as a standalone heading line
+- No site content has been summarized or rephrased — spot check
+  three sites by comparing key facts and named items against
+  what you read from the knowledge source
+- All matching hyperlinks from HyperlinkInventory have been
+  reinserted in [displayText](url) format
+- No text appears before the Appendix heading or after the last
+  line of the last site
+If any check fails, correct it before returning.
+
+If content for a site in SiteList is genuinely not found in the
+knowledge source, insert exactly:
+---PAGE BREAK---
+[SITE NAME]
+No source content found for this site for this reporting period.
+```
+
+---
+
+## Output Format
+
+```
+Appendix – Detailed Site Reports
+
+Site-1
+[full source content reproduced exactly]
+[hyperlinks reinserted where display text matches]
+
+---PAGE BREAK---
+Site-2
+[full source content reproduced exactly]
+
+---PAGE BREAK---
+Site-3
+...
+```
+
+---
+
+## Page Break Handling
+
+The `---PAGE BREAK---` markers are plain text tokens in the agent's output. They are passed as-is into the `APPENDIX_CONTENT` Content Control via `Populate a Word template`. 
+
+The Word Online (Business) connector's Populate action inserts plain text — it does not interpret page break tokens as actual Word page breaks. For true page breaks in the published document, a post-processing step or a third-party connector (e.g. Encodian) would be required. In the current version, the markers serve as clear visual separators in the plain text output and can be processed manually if needed.
+
+---
+
+## Why the Appendix Reads from the Knowledge Source
+
+Unlike the Executive Summary Writer — which works entirely from `SITE_SUMMARIES` input — the Appendix Generator reads from the knowledge source directly. This is necessary because:
+
+- The Site Summarizer processed and restructured the source content into a standardized format
+- The Appendix must reproduce the *original* source content, not the processed version
+- Passing the full original source text as a flow variable is impractical due to size
+
+The agent identifies each site's content by searching the knowledge source for the site name, reading everything in that site's section, and reproducing it verbatim.
