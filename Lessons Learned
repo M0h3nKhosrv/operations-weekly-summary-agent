@@ -1,0 +1,123 @@
+# Lessons Learned
+
+What failed, what worked, and what to know before building anything similar.
+
+---
+
+## 1. The Orchestrator Cannot Store Variables
+
+**The assumption:** Copilot Studio agent instructions can define named variables, store content in them, and pass them to a flow.
+
+**The reality:** The generative orchestrator narrates variable storage. When an instruction says "store the result as EXECUTIVE_SUMMARY," the agent acknowledges this in its reasoning trace but does not create a real, accessible variable. When a subsequent step tries to pass EXECUTIVE_SUMMARY to a flow, there is nothing to pass.
+
+**How to detect it:** The flow is never triggered in Power Automate run history, even when the agent reports "Step 8 complete — publishing." The activity map in Copilot Studio shows the agent performing knowledge source searches rather than executing instructions sequentially.
+
+**The fix:** Move variable storage to Power Automate. Each agent call via `Execute Agent and wait` returns a response that is a real Power Automate variable. Accumulate and pass those variables within the flow.
+
+---
+
+## 2. Topics Cannot Loop Over a Dynamic List
+
+**The assumption:** A Copilot Studio topic can call the same node multiple times, once for each site in a list.
+
+**The reality:** Topics have no loop construct. Each node in the canvas runs once. Calling a node 14 times for 14 sites requires 14 separate nodes — which is unmanageable and breaks when the site count changes.
+
+**The fix:** Use Power Automate's `Apply to each` action. Pass the site list from the Document Reader, loop over it, and call the Site Summarizer agent once per iteration. The loop is native, reliable, and dynamic.
+
+---
+
+## 3. AI Builder Prompt Nodes Are Isolated from Knowledge Sources
+
+**The assumption:** An AI Builder prompt node inside a topic can search the agent's connected SharePoint knowledge source.
+
+**The reality:** AI Builder prompt nodes are isolated. They can receive text as input via the `Add content` → `Text` option, but they cannot dynamically query the agent's knowledge source. Any document content must be passed to the node explicitly.
+
+**Implication:** For a use case where the source document changes weekly, hardcoding a filename or path is not viable. The AI Builder prompt approach breaks at the knowledge source access step.
+
+---
+
+## 4. The Async Loop Hang
+
+**What happened:** After setting up the `Apply to each` loop with `Execute Agent and wait` steps, the loop completed all iterations (showing green checkmarks on each) but did not close. The flow hung for 20+ minutes without progressing to the next step.
+
+**Root cause:** The `Execute Agent and wait` connector uses an asynchronous webhook pattern (`OpenApiConnectionWebhook`). Power Automate waits for all async callbacks from all iterations to fully resolve before releasing the loop. When iterations run in parallel (the default), callback resolution can stall indefinitely.
+
+**The fix:** Set `Apply to each` concurrency to 1 in the Settings tab. This forces sequential execution — one iteration fully completes (including webhook closure) before the next begins. The loop is slower but reliable.
+
+---
+
+## 5. Word Template Must Use Content Controls, Not Text Placeholders
+
+**What happened:** The first version of the Word template used `{{REPORT_DATE}}` style text tokens. The Power Automate `Populate a Word template` step returned: "The selected file doesn't contain template elements" and failed with a `BadRequest`.
+
+**Root cause:** The `Populate a Word template` action in Power Automate's Word Online (Business) connector exclusively recognizes native Word Content Controls — form fields inserted via the Developer tab. Text placeholders in any format are not recognized.
+
+**The fix:** Open the template in Word desktop, enable the Developer tab, and insert Plain Text Content Controls at each placeholder location. Name each control in Properties to match the variable names used in the flow.
+
+---
+
+## 6. DLP Policies Can Block Agent-Flow Combinations
+
+**What happened:** An early version of the agent was blocked by a Data Loss Prevention (DLP) policy conflict. The Copilot Studio knowledge source connector was classified as "Non-business" while the Word Online and SharePoint connectors used in the flow were "Business." The policy prohibited mixing connectors across these groups.
+
+**Resolution:** This is a tenant governance issue, not a configuration error. The fix requires a Power Platform admin to reclassify the relevant Copilot Studio connector as "Business" in the Default DLP policy. Switching from SharePoint to OneDrive does not resolve it — the conflict is with the Copilot Studio knowledge source connector itself, which covers both.
+
+**Key detail for the admin:** The policy change is made in the Power Platform Admin Center under Policies → Data Policies. The connector to reclassify is "Knowledge source with SharePoint and OneDrive in Copilot Studio."
+
+---
+
+## 7. Connection References Break When Flows Are Rebuilt
+
+**What happened:** After rebuilding the flow in a new environment, the Word Online (Business) step failed with: "Failed to find connection references with logical name(s) [id]."
+
+**Root cause:** Flows store a reference to the specific connection used for each connector. When a flow is moved to a new environment or rebuilt, that reference may point to a connection that no longer exists or was never created in the new environment.
+
+**The fix:** Open the flow in Power Automate, find the step with the orange warning icon, click the connection dropdown, and either re-authenticate or create a new connection. Then save and republish. If the issue persists, go to the solution in Power Apps → Connection References → find the affected reference → edit and reassign.
+
+---
+
+## 8. `body/lastResponse` Is the Correct Output Path
+
+**What happened:** Early expressions used `first(outputs('Execute_Agent_and_wait')?['body/responses'])` to extract the agent's response. This returned null inconsistently.
+
+**Root cause:** `body/responses` is an array that can be empty. `body/lastResponse` is a string that contains the final text response directly.
+
+**The fix:** Always use `body/lastResponse` to extract text from an `Execute Agent and wait` step:
+```
+outputs('Execute_Agent_and_wait')?['body/lastResponse']
+```
+
+For the Document Reader, which returns JSON wrapped in code fences, strip the fences before parsing:
+```
+replace(replace(outputs('Execute_Document_Reader_Agent_and_wait')?['body/lastResponse'], '```json', ''), '```', '')
+```
+
+---
+
+## 9. Action Names in Expressions Must Match Internal Names
+
+**What happened:** After renaming a flow step from "Execute Agent and wait" to "Execute Document Reader Agent and wait," the Compose expression referencing the old name returned null.
+
+**Root cause:** Power Automate expressions reference steps by their internal name, which is derived from the display name with spaces replaced by underscores. Renaming a step changes its internal name, breaking any expression that referenced the old name.
+
+**How to find the correct internal name:** Open any downstream step → Code view → `runAfter` section. It will list the exact internal name of the step it depends on.
+
+---
+
+## 10. Tool Description Is the Single Most Important Configuration
+
+**The finding:** The wording of a tool's description in the Copilot Studio Tools tab directly determines whether the orchestrator calls the tool automatically, when it calls it, and what it passes.
+
+**What a bad description causes:** The orchestrator treats the tool as a general capability and either ignores it, calls it at the wrong time, or asks the user to provide the input the agent should be passing automatically.
+
+**What a good description causes:** The orchestrator calls the tool at the right step, passes the correct variables, and does not prompt the user.
+
+**Pattern:**
+```
+Call this tool [immediately after / when condition]. 
+Pass [VariableName] as [plain description of what it contains]. 
+Do not ask the user for any input. 
+Returns [what comes back].
+```
+
+This pattern is the difference between a working agent and one that silently fails at the tool-call step.
