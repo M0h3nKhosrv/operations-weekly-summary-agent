@@ -1,0 +1,166 @@
+# Architecture Overview
+
+## System Purpose
+
+This system automates the production of a weekly operations summary report. The source material is a Word document containing raw operational updates from multiple sites. The output is a structured, formatted Word document with three sections, delivered automatically when the source document is deposited.
+
+---
+
+## High-Level Flow
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  SOURCE DOCUMENT deposited to SharePoint trigger folder │
+└─────────────────────────┬───────────────────────────────┘
+                          │ triggers
+                          ▼
+┌─────────────────────────────────────────────────────────┐
+│           POWER AUTOMATE FLOW                           │
+│                                                         │
+│  Step 1 ── SharePoint trigger fires                     │
+│                                                         │
+│  Step 2 ── Execute Document Reader Agent and wait       │
+│            Input:  filename (via message)               │
+│            Output: SiteList, HyperlinkInventory,        │
+│                    REPORT_DATE (JSON)                   │
+│                                                         │
+│  Step 3 ── Compose: strip code fences from JSON         │
+│  Step 4 ── Parse JSON: extract three variables          │
+│  Step 5 ── Set variable: REPORT_DATE                    │
+│  Step 6 ── Initialize variable: SITE_SUMMARIES = ""     │
+│                                                         │
+│  Step 7 ── Apply to each site in SiteList (loop)        │
+│            ├── Execute Site Summarizer Agent and wait   │
+│            │   Input:  site name                        │
+│            │   Output: SiteSummary (plain text)         │
+│            └── Append SiteSummary to SITE_SUMMARIES     │
+│                                                         │
+│  Step 8 ── Execute Executive Summary Writer and wait    │
+│            Input:  SITE_SUMMARIES                       │
+│            Output: EXECUTIVE_SUMMARY                    │
+│                                                         │
+│  Step 9 ── Execute Appendix Generator and wait          │
+│            Input:  SiteList, HyperlinkInventory         │
+│            Output: APPENDIX_CONTENT                     │
+│                                                         │
+│  Step 10 ─ Populate Word template                       │
+│            Maps: REPORT_DATE, EXECUTIVE_SUMMARY,        │
+│                  SITE_SUMMARIES, APPENDIX_CONTENT       │
+│                                                         │
+│  Step 11 ─ SharePoint: Create file (timestamped name)   │
+│  Step 12 ─ SharePoint: Get file properties (URL)        │
+│  Step 13 ─ Send email notification with URL             │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Agents and Their Roles
+
+### Document Reader Agent
+
+**Called:** Once, at the start of the flow.
+**Input:** Filename of the source document (passed via message).
+**Output:** A JSON object with three fields — `REPORT_DATE`, `SiteList`, `HyperlinkInventory`.
+
+This agent reads the entire source document, identifies which sites have content, collects all hyperlinks, and finds the week-ending date. It returns structured JSON because Power Automate needs to parse these outputs programmatically — the site list drives the loop, and the hyperlink inventory is passed downstream to the Appendix Generator.
+
+It does not generate any report content.
+
+---
+
+### Site Summarizer Agent
+
+**Called:** Once per site, inside the `Apply to each` loop.
+**Input:** One site name (the current item in the loop).
+**Output:** Plain text — one complete site summary with all six standard categories.
+
+This agent searches the knowledge source specifically for the site it received, reads that site's content, maps the site's headings to the six standard categories, applies the content priority hierarchy, and returns a consistently formatted summary block.
+
+Because this agent is called N times and its outputs are concatenated, formatting consistency between calls is critical. The assembled string becomes `SITE_SUMMARIES`.
+
+---
+
+### Executive Summary Writer Agent
+
+**Called:** Once, after the loop completes.
+**Input:** The fully assembled `SITE_SUMMARIES` text.
+**Output:** Plain text — Section 1 of the report.
+
+This agent works entirely from the already-processed site summaries — it does not read the knowledge source. It selects the top two priority items per site from `SITE_SUMMARIES` and formats them as the Executive Summary. This ensures Section 1 is consistent with Section 2 rather than being a separate interpretation of the source.
+
+---
+
+### Appendix Generator Agent
+
+**Called:** Once, after the Executive Summary Writer.
+**Input:** `SiteList` and `HyperlinkInventory`.
+**Output:** Plain text — Section 3 of the report.
+
+This agent reads the source content for each site from the knowledge source and reproduces it exactly — no summarizing, no rephrasing. It adds a page break and site-name heading before each site's block. Hyperlinks from the inventory are reinserted where display text matches.
+
+The Appendix is a reproduction task, not a generation task. Its instructions explicitly prohibit paraphrasing.
+
+---
+
+## Variable Flow
+
+| Variable | Created by | Used by |
+|---|---|---|
+| `SiteList` | Document Reader (JSON) | Loop driver; Appendix Generator input |
+| `HyperlinkInventory` | Document Reader (JSON) | Appendix Generator input |
+| `REPORT_DATE` | Document Reader (JSON) | Word template Content Control |
+| `SITE_SUMMARIES` | Loop accumulation | Executive Summary Writer input; Word template |
+| `EXECUTIVE_SUMMARY` | Executive Summary Writer | Word template Content Control |
+| `APPENDIX_CONTENT` | Appendix Generator | Word template Content Control |
+
+---
+
+## Word Template
+
+The template has four Content Controls, each mapped by the `Populate a Word template` step:
+
+| Content Control | Maps to |
+|---|---|
+| `REPORT_DATE` | Week-ending date |
+| `EXECUTIVE_SUMMARY` | Section 1 content |
+| `SITE_SUMMARIES` | Section 2 content |
+| `APPENDIX_CONTENT` | Section 3 content |
+
+Content Controls must be native Word Content Controls (inserted via the Developer tab), not text placeholders. The Power Automate `Populate a Word template` action only recognizes native Content Controls.
+
+---
+
+## Knowledge Source
+
+All agents that read the source document — the Document Reader, Site Summarizer, and Appendix Generator — are connected to the same SharePoint folder as their knowledge source. The Executive Summary Writer does not need a knowledge source because it works entirely from the `SITE_SUMMARIES` input.
+
+The Document Reader identifies the correct file by filename, passed in the flow's message to the agent. The Site Summarizer identifies site content by searching for the site name. The Appendix Generator searches per site in the same way.
+
+---
+
+## Trigger
+
+The flow is triggered by `When a file is created (properties only)` on the SharePoint source folder. This fires automatically when a new source document is deposited, whether manually or by an upstream automation. No manual flow trigger is needed.
+
+---
+
+## Output
+
+The output file is named using the expression:
+
+```
+Operations_Weekly_Summary_[REPORT_DATE].docx
+```
+
+If multiple runs occur on the same day, a timestamp suffix ensures files are not overwritten:
+
+```
+concat('Operations_Weekly_Summary_', formatDateTime(utcNow(), 'yyyy-MM-dd_HH-mm-ss'), '.docx')
+```
+
+---
+
+## Planned: Audit Agent (v1.1)
+
+An Audit Agent is planned as a quality gate between the Appendix Generator and the Word template population step. It will receive all four content variables, verify structure and completeness, and either pass or return a list of unresolved issues. If the audit passes, the flow populates the template. If it fails, the flow sends the issue list to the user instead of publishing a flawed document.
