@@ -1,0 +1,136 @@
+# Design Decisions
+
+This document captures the three architectural proposals that were evaluated, the reasoning behind the final choice, and the key decisions made during implementation.
+
+---
+
+## The Central Problem
+
+The system must:
+1. Read a source Word document from SharePoint
+2. Generate structured content (requiring language reasoning)
+3. Pass that generated content to a Power Automate flow as named variables
+4. Have the flow populate a Word template and save it to SharePoint
+
+The hard part is step 3. Getting AI-generated text out of a Copilot Studio agent and into a Power Automate flow as reliable, named variables turned out to be the defining challenge of the entire design.
+
+---
+
+## Three Proposals Evaluated
+
+### Proposal 1 — Single Agent, Sequential Instructions
+
+**Description:** One Copilot Studio agent with detailed step-by-step instructions. The agent reads the document, generates all content, self-checks, then calls the flow with named variable inputs.
+
+**Appealing because:** Simple to build. The pattern was proven with a test agent (see `test/`). Minimal moving parts.
+
+**What happened:** The agent followed the instructions conversationally — narrating each step, reporting variables as "stored" — but the flow was never triggered. Power Automate run history showed zero executions, despite the agent reporting success.
+
+**Root cause:** The Copilot Studio generative orchestrator does not have real variable storage. When the agent says "EXECUTIVE_SUMMARY stored," it has described an action, not performed one. When Step 8 calls the flow and attempts to pass `EXECUTIVE_SUMMARY` as input, there is nothing real to pass. The orchestrator quietly skips the tool call.
+
+**Status:** ❌ Proven not to work for passing large content variables to a flow.
+
+---
+
+### Proposal 2 — Single Agent with AI Builder Prompt Nodes via Topic
+
+**Description:** A Copilot Studio topic with multiple AI Builder prompt nodes chained in sequence — one for reading/mapping, one for each section, one for the self-check. Each node stores output in a variable. The flow is called at the end with assembled content.
+
+**Appealing because:** Topic canvas provides explicit, inspectable steps. AI Builder prompt nodes do produce real output variables (confirmed during testing).
+
+**What happened:** Two blocking issues were discovered:
+
+1. **Knowledge source access:** AI Builder prompt nodes are isolated from the agent's knowledge source. They cannot dynamically query SharePoint for whichever file was most recently added. The file would need to be hardcoded or passed as a static text input — neither is viable for a weekly process with a changing source filename.
+
+2. **No loop construct:** The topic canvas has no native mechanism for calling a node once per item in a dynamic list. Generating summaries for N sites requires N iterations — which requires a loop — which does not exist in the topic canvas.
+
+**Status:** ❌ Blocked by knowledge source isolation and absence of loop construct.
+
+---
+
+### Proposal 3 — Multi-Agent Architecture
+
+**Description:** A parent orchestrator agent delegates to specialized child agents — one for reading, one for summarizing (called N times), one for the executive summary, one for the appendix. The parent collects outputs and passes them to the flow.
+
+**Appealing because:** Content is distributed across agents, reducing truncation risk. Each agent has one focused job. Failures are easier to isolate.
+
+**Initial concern:** Copilot Studio multi-agent orchestration was still maturing at the time of evaluation, and calling child agents in a loop from a parent orchestrator was not natively supported.
+
+**Resolution:** The `Execute Agent and wait` connector in Power Automate solves the loop problem. Rather than the orchestrator agent looping over child agents, the Power Automate flow loops using `Apply to each` — a native, reliable construct. Each child agent is called as a flow step, its output is a real Power Automate variable, and the loop produces a real accumulated string.
+
+**Status:** ✅ Selected. The flow handles orchestration; agents handle generation.
+
+---
+
+## Why the Flow Handles Orchestration
+
+The key insight that resolved the architectural problem:
+
+> Variables are real in Power Automate. Variables are narrated in Copilot Studio's generative orchestrator.
+
+Once this was understood, the right division of responsibility became clear:
+
+- **Copilot Studio agents:** Language reasoning, content generation, structured output
+- **Power Automate flow:** Orchestration, looping, variable accumulation, file operations
+
+The `Execute Agent and wait` connector bridges the two. Each agent call returns a response that becomes a real Power Automate variable. The loop accumulates those responses into `SITE_SUMMARIES`. By the time the flow reaches the Word template step, all four variables are real, typed, Power Automate string variables — not narrated claims.
+
+---
+
+## Key Decisions Made During Implementation
+
+### Topics vs. Generative Orchestration
+
+**Decision:** No topic. Generative orchestration handles routing.
+
+**Reasoning:** When a Copilot Studio agent has generative orchestration enabled (the default), the orchestrator evaluates every user message and decides whether to route to a topic or handle it directly. For a single-purpose agent, the orchestrator consistently makes the right call without a topic. Topics add value when an agent has multiple distinct intents requiring different flows.
+
+Attempting to force the orchestrator to use a topic — by removing the tool from the Tools tab — created confusion about where the tool was accessible. The cleaner design is: no topic, tool registered at agent level, tool description drives orchestrator behavior.
+
+### Tool Description Controls Orchestrator Behavior
+
+**Decision:** Tool descriptions must be explicit about when to call, what to pass, and what not to do.
+
+**Evidence from test agent:** The vague description "imports material into a Word template" caused the orchestrator to ask the user for the report content. The precise description — specifying the exact step after which to call, the exact input variable name, and an explicit instruction not to ask the user — caused the orchestrator to call the tool automatically with the correct input.
+
+**Pattern to follow:**
+```
+Call this tool [when]. Pass [exact variable name] as [what it contains].
+Do not ask the user for any input. Returns [what comes back].
+```
+
+### JSON Output from Document Reader
+
+**Decision:** Document Reader returns JSON; flow parses it with `Compose` (strip code fences) then `Parse JSON`.
+
+**Reasoning:** The Document Reader must return three different structured outputs — a date string, an array of site names, and an array of hyperlink objects. Plain text cannot represent this unambiguously. JSON is the natural format for structured multi-field output from an agent.
+
+**Implementation note:** The agent wraps its JSON in markdown code fences (` ```json ... ``` `). The `Compose` step strips these before `Parse JSON` processes the clean string. The expression used:
+
+```
+replace(replace(outputs('Execute_Document_Reader_Agent_and_wait')?['body/lastResponse'], '```json', ''), '```', '')
+```
+
+### Concurrency Control on the Loop
+
+**Decision:** Set `Apply to each` concurrency to 1 (sequential, not parallel).
+
+**Reasoning:** The `Execute Agent and wait` connector uses an asynchronous webhook pattern. When multiple webhook-based actions run in parallel inside a loop, the loop can hang waiting for all async callbacks to resolve — even after all iterations show green checkmarks. Setting concurrency to 1 forces sequential execution and eliminates this hang.
+
+### File Naming
+
+**Decision:** Output files are named with a timestamp, not just the report date.
+
+**Reasoning:** During testing and validation, multiple runs occur on the same day. A date-only filename causes the `Create file` step to fail with a `BadRequest` error when a file with that name already exists in the output folder. A timestamp suffix (`yyyy-MM-dd_HH-mm-ss`) makes every run unique.
+
+### Content Controls vs. Text Placeholders
+
+**Decision:** Word template uses native Word Content Controls, not `{{placeholder}}` text tokens.
+
+**Reasoning:** The Power Automate `Populate a Word template` action requires native Word Content Controls. Text placeholders (e.g. `{{REPORT_DATE}}`) are not recognized by the action, which returns "The selected file doesn't contain template elements." Content Controls must be inserted manually using the Developer tab in Word desktop.
+
+### Formatting Limitation of Populate Template
+
+**Decision:** Accept plain text output; rely on the template for structural formatting.
+
+**Reasoning:** The `Populate a Word template` action replaces Content Controls with plain text. Any rich formatting (bold headings, bullets) in the agent's output is stripped. The template itself defines the formatting context around each Content Control. For a weekly operations summary, readable structured plain text is sufficient — rich Word formatting inside Content Controls would require a third-party connector (Encodian, Muhimbi) or custom code.
