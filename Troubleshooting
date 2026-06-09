@@ -1,0 +1,160 @@
+# Troubleshooting
+
+Known issues, error messages, and their fixes.
+
+---
+
+## Flow Errors
+
+### "The selected file doesn't contain template elements"
+
+**Where it appears:** `Populate a Word template` step  
+**Error code:** `BadRequest` / `DynamicOperationRequestClientFailure`
+
+**Cause:** The Word template uses text placeholders (e.g. `{{REPORT_DATE}}`) instead of native Word Content Controls. The Power Automate connector only recognizes Content Controls.
+
+**Fix:** Open the template in Word desktop (not Word Online), enable the Developer tab, and replace each placeholder with a Plain Text Content Control. Name each control in Properties to match the variable name. See `docs/template/word-template-setup.md`.
+
+---
+
+### "Required property 'content' expects a value but got null"
+
+**Where it appears:** `Parse JSON` step  
+**Expression reference:** `Compose — strip code fences`
+
+**Cause:** The Compose step received null — meaning the Document Reader agent returned an empty `lastResponse`. This usually happens when the flow was triggered using "With a recently used trigger" and the agent recognized the conversation as a repeat.
+
+**Fix:** Upload a new file to the SharePoint trigger folder to create a fresh trigger event. Do not reuse prior trigger runs for testing if the Document Reader has already processed that conversation.
+
+---
+
+### "Flow run timed out because the starting action was not performed"
+
+**Where it appears:** Test panel, when using `Test → Manually`
+
+**Cause:** The manual test mode waits for the trigger to fire within a timeout window. If no file is uploaded before the window closes, the test fails.
+
+**Fix:** Click `Test → Manually`, then immediately go to SharePoint and upload the source document. Alternatively, use `Test → With a recently used trigger` to reuse a prior trigger event without uploading.
+
+---
+
+### "BadGateway" on flow step
+
+**Where it appears:** Any `Execute Agent and wait` step or `Create file` step  
+**Error code:** `FlowActionBadGateway`
+
+**Cause:** Generic error indicating the step triggered but failed internally. Could be:
+- An agent that timed out during processing
+- A SharePoint folder path that does not exist
+- A connection issue on the connector
+
+**Fix:**
+1. Go to `make.powerautomate.com` → `My flows` → open the flow → `28 day run history`
+2. Click the failed run and identify which step shows a red X
+3. Expand that step to see the specific error detail
+
+If the failing step is `Create file`: verify the folder path exists in SharePoint and that the connection account has write access.  
+If the failing step is an agent step: check the agent timeout setting (Settings tab → Timeout → set to `PT5M` or higher).
+
+---
+
+### Apply to each loop hangs after all iterations complete
+
+**What it looks like:** All iterations show green checkmarks, the loop header shows a blue spinner, and the next step never starts — even after 20+ minutes.
+
+**Cause:** The `Execute Agent and wait` connector uses an asynchronous webhook. When iterations run in parallel (the default), the loop waits for all async callbacks to fully close before releasing. If any callback stalls, the loop hangs indefinitely.
+
+**Fix:**
+1. Click the `Apply to each` step header
+2. Go to the Settings tab
+3. Enable **Concurrency Control**
+4. Set **Degree of Parallelism** to **1**
+
+This forces sequential execution — each iteration fully completes before the next begins. The loop is slower but reliable.
+
+---
+
+### "Failed to find connection references" on Word Online step
+
+**Full error:** `Failed to find connection references with logical name(s) 'cr384_[agent].shared_wordonlinebusiness.[id]'`
+
+**Cause:** The flow is referencing a Word Online connection that was created in a different environment or was never properly authorized in the current environment.
+
+**Fix:**
+1. Go to `make.powerautomate.com` → open the flow
+2. Find the `Populate a Word template` step — look for an orange warning triangle
+3. Click the connection dropdown at the top of that step
+4. Click **Add new connection** and sign in with your account
+5. Save and republish the flow
+6. If the error persists: go to `make.powerapps.com` → Solutions → find the solution containing the agent → Connection References → find the Word Online reference → Edit → reassign to your account
+
+---
+
+### "Self reference is not supported when updating the value of variable"
+
+**Where it appears:** `Set variable — REPORT_DATE` step
+
+**Cause:** The variable's value field is referencing the variable itself (REPORT_DATE) instead of the Parse JSON output (Body REPORT_DATE).
+
+**Fix:** In the Set variable step, clear the Value field and re-add it from dynamic content. Under the **Parse JSON** section (not the Variables section), select **Body REPORT_DATE**.
+
+---
+
+### "Input parameter 'body' validation failed — not convertible to type 'Object'"
+
+**Where it appears:** `Execute Agent and wait` step, when trying to pass file content as an attachment
+
+**Cause:** The attachment `content` field expects a specific object type, not a raw binary string or base64-encoded string. The Power Automate connector for Copilot Studio agents does not support passing Word document binary content as an attachment.
+
+**Fix:** Remove the attachment entirely from the Execute Agent and wait step. Instead, pass only the filename in the Message field, and rely on the agent's knowledge source connection to read the file directly:
+```
+A new weekly source document has been added to the knowledge source.
+The file name is: [File name with extension]
+Read this document and return the JSON output.
+```
+
+---
+
+## DLP Policy Conflict
+
+### Agent blocked from combining connectors
+
+**Error indication:** The agent or flow fails to run with a policy conflict error. The error details reference a Policy ID and list connectors in conflicting groups (Business vs. Non-business).
+
+**Cause:** The Power Platform admin has a DLP policy that classifies the Copilot Studio knowledge source connector as "Non-business" while the Word Online and SharePoint connectors used in the flow are "Business." Mixing connectors across groups is blocked.
+
+**Fix (requires Power Platform admin):**
+1. Go to `admin.powerplatform.microsoft.com` → **Policies** → **Data Policies**
+2. Find the relevant DLP policy (the Policy ID is in the error message)
+3. Edit the policy → go to the **Prebuilt connectors** step
+4. Find **"Knowledge source with SharePoint and OneDrive in Copilot Studio"** in the Non-business group
+5. Move it to the **Business** group
+6. Save the policy (changes can take up to an hour to propagate)
+
+**Note:** If the admin is hesitant to change the tenant-wide policy, they can create a new DLP policy scoped to a specific environment and apply the reclassification only there.
+
+---
+
+## Agent Behavior Issues
+
+### Agent returns empty response on repeated trigger
+
+**Symptom:** The Document Reader returns an empty `lastResponse` and the Compose step fails with null.
+
+**Cause:** Copilot Studio agents maintain conversation state. When the same flow run is repeated (via "With a recently used trigger"), the agent may recognize the conversation and not repeat its output.
+
+**Fix:** Add this instruction to the top of the Document Reader's instructions:
+```
+Every time you are called you must perform all steps and return
+the full JSON output. Do not refer to previous conversations.
+Treat every call as a fresh start.
+```
+Also trigger fresh flow runs by uploading new files rather than reusing prior triggers.
+
+### Agent narrates steps but does not call the tool
+
+**Symptom:** The agent sends status messages about completing each step but the flow is never triggered in Power Automate run history.
+
+**Cause:** The orchestrator is simulating the process conversationally without actually executing the tool call. This happens when the tool description is too vague or the instructions do not explicitly connect the generation steps to the tool call.
+
+**Fix:** Review the tool description in the Tools tab. It must specify exactly when to call, what to pass, and must include the instruction "Do not ask the user for any input." See `docs/architecture/design-decisions.md` — "Tool Description Controls Orchestrator Behavior."
