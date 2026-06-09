@@ -1,0 +1,121 @@
+# Test Agent
+
+## Purpose
+
+Before building the main multi-agent system, a simplified test agent was built to validate the core architecture. The test agent proved that the end-to-end pattern works — agent reads from knowledge source, generates content, calls flow, flow populates Word template, saves to SharePoint, returns URL.
+
+This validated the pattern before investing in the full four-agent system.
+
+---
+
+## What the Test Agent Does
+
+1. Reads a fixed test file (`Test_AG_File.docx`) from the knowledge source
+2. Generates a one-paragraph summary of its content
+3. Captures today's date
+4. Calls the flow with two variables: `SummaryDate` and `SummaryContent`
+5. The flow populates a two-field Word template and saves to SharePoint
+6. Returns the SharePoint URL to the user
+
+---
+
+## What the Test Proved
+
+| Component | Validated |
+|---|---|
+| Agent reads from SharePoint knowledge source | ✅ |
+| Agent generates content and stores in named variables | ✅ |
+| Agent calls flow tool automatically (no user prompt) | ✅ |
+| Flow receives named variables from agent | ✅ |
+| Flow populates Word template with Content Controls | ✅ |
+| Flow saves file to SharePoint with timestamped name | ✅ |
+| Flow returns URL to agent | ✅ |
+| Agent returns URL to user | ✅ |
+
+---
+
+## Key Lessons That Shaped the Main Architecture
+
+**Tool description wording is everything.** The first tool description ("imports material into a Word template and publishes") caused the agent to ask the user to provide the report content. The corrected description — specifying when to call, what to pass, and not to ask the user — caused the agent to call the tool automatically with the correct input.
+
+**Variable names must be consistent.** `SummaryDate` and `SummaryContent` were used consistently across: agent instructions, flow trigger input names, and the tool description. Any mismatch caused the tool call to fail or pass wrong values.
+
+**Topics are not needed for single-intent agents.** An attempt was made to wrap the agent in a topic for "more control." Testing showed the generative orchestrator bypassed the topic and handled the request directly — correctly and reliably. The topic was disabled.
+
+**`body/lastResponse` is the correct output path.** `body/responses` (an array) returned inconsistent results. `body/lastResponse` (a string) reliably contains the agent's final text response.
+
+---
+
+## Test Agent Instructions
+
+```
+# ROLE
+You are the Test Summary Agent. When triggered via the
+"Generate Summary" topic, you read the file named Test_AG_File
+from the knowledge source and generate a one-paragraph summary
+of its content. The topic handles publishing the result to a
+Word file automatically.
+
+# STEP 1 — READ THE SOURCE FILE
+Read the entire content of Test_AG_File from the knowledge
+source before doing anything else.
+
+# STEP 2 — COLLECT THE DATE
+Get today's date and format it as Month DD, YYYY
+(e.g. May 19, 2026). Store this as SummaryDate.
+
+# STEP 3 — GENERATE THE SUMMARY
+Write a single paragraph of 3 to 5 sentences that captures
+the main topics covered in the document. Use clear, plain
+language. Do not copy sentences directly from the source.
+Store this as SummaryContent.
+
+# STEP 4 — PUBLISH
+Immediately call the Create Test Summary File tool. Pass:
+- SummaryDate as the date value
+- SummaryContent as the summary value
+Do not ask the user for any input.
+Do not display the summary in the chat before calling the tool.
+After the tool returns a URL, respond to the user with exactly:
+"Your summary is ready: [URL]"
+```
+
+---
+
+## Test Flow Inputs
+
+The test flow (`Create_Summary_File`) accepts two inputs in the trigger step:
+
+| Name | Type | Description |
+|---|---|---|
+| `SummaryDate` | Text | The date the summary was generated, formatted as Month DD, YYYY |
+| `SummaryContent` | Text | A one-paragraph summary of the source document content |
+
+---
+
+## Test Tool Description
+
+```
+Call this tool immediately after generating the summary. Pass 
+SummaryDate as the formatted date and SummaryContent as the one 
+paragraph summary. Do not ask the user for any input. Returns a 
+SharePoint URL where the published Word file can be accessed.
+```
+
+---
+
+## Test Template
+
+The test Word template has two Content Controls:
+
+| Control Name | Content |
+|---|---|
+| `SummaryDate` | The date |
+| `SummaryContent` | The summary paragraph |
+
+---
+
+## Files
+
+- `Test_AG_File.docx` — sample source document with seven unrelated paragraphs used as test input
+- The test Word template is not included in the repository (it contained Content Controls which must be inserted in Word desktop per the instructions in `docs/template/word-template-setup.md`)
