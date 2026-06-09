@@ -1,0 +1,137 @@
+# Word Template Setup
+
+## Overview
+
+The Word template contains four Content Controls that Power Automate fills when the flow runs. The template defines all formatting — fonts, spacing, headers, footers, page layout. The Content Controls are replaced with plain text at runtime.
+
+---
+
+## Why Content Controls (Not Text Placeholders)
+
+The Power Automate `Populate a Word template` action exclusively recognizes native Word Content Controls. Text placeholders in any format — `{{REPORT_DATE}}`, `[REPORT_DATE]`, `<REPORT_DATE>` — are not recognized. Attempting to use text placeholders causes this error:
+
+> "The selected file doesn't contain template elements"
+
+Content Controls must be inserted manually using the Developer tab in Word desktop. Word Online does not reliably save Content Controls.
+
+---
+
+## Required Content Controls
+
+| Control Name | Location in Document | Content Type |
+|---|---|---|
+| `REPORT_DATE` | Title block (appears twice — title and Section 1 header) | Plain Text |
+| `EXECUTIVE_SUMMARY` | Section 1 body | Plain Text |
+| `SITE_SUMMARIES` | Section 2 body | Plain Text |
+| `APPENDIX_CONTENT` | Section 3 body | Plain Text |
+
+---
+
+## Step-by-Step: Adding Content Controls
+
+### Step 1 — Enable the Developer Tab
+
+1. Open the template in **Word desktop** (not Word Online)
+2. Go to **File → Options → Customize Ribbon**
+3. In the right column, check **Developer**
+4. Click **OK**
+
+The Developer tab now appears in the ribbon.
+
+### Step 2 — Insert a Content Control
+
+For each of the four locations in the template:
+
+1. Place your cursor at the location where the content should appear (or select any existing placeholder text)
+2. Go to the **Developer tab**
+3. In the **Controls** group, click **Plain Text Content Control** (the `Aa` icon)
+4. A grey box appears at the cursor location — this is the Content Control
+
+### Step 3 — Name the Content Control
+
+With the Content Control selected:
+
+1. Click **Properties** in the Controls group
+2. In the **Title** field, enter the exact name (e.g. `REPORT_DATE`)
+3. In the **Tag** field, enter the same name
+4. Click **OK**
+
+Repeat for all four Content Controls.
+
+### Step 4 — Save and Upload
+
+1. Save the file as `.docx`
+2. Upload it to the SharePoint library designated for templates
+3. In the Power Automate `Populate a Word template` step, reselect this file — the four Content Controls will appear as mappable fields
+
+---
+
+## Template Formatting
+
+The template defines the visual formatting for the published report. Because the `Populate a Word template` action inserts plain text (stripping any rich formatting from the agent's output), the template itself must establish the structural context.
+
+**Recommended template structure:**
+
+```
+[Title block]
+Operations Weekly Summary
+Week Ending: [REPORT_DATE Content Control]
+
+─────────────────────────────────────
+
+Section 1 — Executive Summary
+
+[EXECUTIVE_SUMMARY Content Control]
+
+─────────────────────────────────────
+[page break]
+
+Section 2 — Site Summaries
+
+[SITE_SUMMARIES Content Control]
+
+─────────────────────────────────────
+[page break]
+
+Section 3 — Appendix
+
+[APPENDIX_CONTENT Content Control]
+```
+
+**Formatting guidelines:**
+- Use consistent fonts throughout (the template font applies to all Content Control output)
+- Add section headers as formatted headings in the template — not inside the Content Controls
+- The footer with confidentiality notice and page numbers should be configured in the template's footer section (Insert → Footer)
+
+---
+
+## Verifying Content Controls Are Present
+
+After inserting Content Controls and saving, verify them before uploading:
+
+1. Go to the **Developer tab** → click **Design Mode**
+2. Content Controls will display as outlined boxes with their Title visible
+3. If you see plain text where a Content Control should be, it was not saved correctly — re-insert
+
+Alternatively, test by going to Power Automate, opening the `Populate a Word template` step, and selecting the template file. If Content Controls are recognized, the four field names will appear as mappable inputs. If the step shows no fields or shows the error about template elements, the Content Controls are missing.
+
+---
+
+## Formatting Limitation
+
+The `Populate a Word template` action inserts content as plain text. Any formatting produced by the agents — bold headings, bullet characters, line breaks — is preserved as characters in the text but is not rendered as Word formatting (bold, list style, etc.).
+
+The output document will be readable and structured, but will not have styled headings or formatted bullet lists inside the Content Control areas. The template's own formatting applies to the surrounding structure (title, section headers, footers, page layout).
+
+If styled output inside Content Controls is required, a third-party Power Automate connector such as Encodian or Muhimbi can process the document after template population.
+
+---
+
+## Template File
+
+The template file is included in the repository at:
+```
+templates/Operations_Weekly_Summary_Template.docx
+```
+
+This file contains the layout and placeholder markers indicating where each Content Control should be inserted. Content Controls cannot be committed to a repository in a state that Power Automate can read — they must be inserted manually in Word desktop using the steps above before uploading to SharePoint.
