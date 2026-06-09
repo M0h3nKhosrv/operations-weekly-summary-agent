@@ -1,0 +1,89 @@
+# Trigger Setup
+
+## Trigger Type
+
+**SharePoint — When a file is created (properties only)**
+
+Do not use the deprecated `When a file is created in a folder` trigger — use the current `(properties only)` version.
+
+---
+
+## Configuration
+
+| Field | Value |
+|---|---|
+| Site Address | Your SharePoint site URL (select from dropdown — do not type manually) |
+| Library Name | The document library containing the source folder |
+| Folder | The specific folder where weekly source documents are deposited |
+
+---
+
+## Why This Trigger
+
+The flow is designed to run automatically when a new source document appears — not on a schedule, not on a manual trigger. The file-creation trigger ensures:
+
+- The flow starts immediately when the source document is ready, regardless of what time it arrives
+- No one needs to remember to start the process manually
+- The same trigger works whether the source document is deposited manually today or by an upstream automation in the future
+
+---
+
+## What the Trigger Provides
+
+When the trigger fires, it makes these dynamic values available to subsequent steps:
+
+| Dynamic Value | Used in |
+|---|---|
+| `ID` | `Get file content` step (if used — not needed in current design) |
+| `File name with extension` | Document Reader agent message (so the agent knows which file to read) |
+| `Path` | Available if needed for direct file URL construction |
+
+The trigger provides file metadata, not file content. The Document Reader agent reads the file content directly from the knowledge source using the filename.
+
+---
+
+## Testing the Trigger
+
+Power Automate's manual test option (`Test → Manually`) requires the trigger to fire within a timeout window. If the window expires before a file is uploaded, the test fails with "Flow run timed out because the starting action was not performed."
+
+**Recommended testing approach:**
+
+1. Click `Test → Manually → Test`
+2. Immediately navigate to SharePoint and upload the source document to the trigger folder
+3. The flow fires within seconds of the upload
+
+For repeated testing without uploading a new file each time:
+1. Click `Test → With a recently used trigger`
+2. Select a prior successful trigger run from the list
+3. The flow reruns using the same file reference
+
+**Note:** When using "With a recently used trigger," the Document Reader agent may return an empty response if it recognizes the conversation as a repeat. If this happens, upload a fresh file to generate a new trigger event.
+
+---
+
+## Source Folder Conventions
+
+The trigger monitors a single folder. Recommended folder structure:
+
+```
+SharePoint Site
+└── Document Libraries
+    └── Operations Reports
+        ├── Source (trigger folder — drop weekly source file here)
+        └── Output (where finished summaries are saved)
+```
+
+Keep the source folder clean — only the current week's file should be present. If multiple files are present, the Document Reader will read whichever it finds by the filename passed in the trigger message.
+
+---
+
+## Upstream Automation (Future)
+
+In the current process, the source document is created manually and deposited into the trigger folder. The SharePoint trigger is designed to work identically whether the file is deposited manually or by an upstream automation.
+
+A future upstream flow could:
+1. Collect weekly site update emails
+2. Compile them into a source Word document
+3. Save the document to the trigger folder
+
+The Operations Weekly Summary Flow would then fire automatically — with no change to its configuration.
